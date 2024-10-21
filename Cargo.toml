@@ -1,0 +1,11 @@
+[package]
+name = "ratatui-helpers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+directories = "5.0.1"
+itertools = "0.13.0"
+ratatui = { version = "0.28.1", features = ["crossterm"] }
+serde = { version = "1.0.210", features = ["derive"] }
+toml = "0.8.19"
