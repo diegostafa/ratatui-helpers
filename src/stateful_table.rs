@@ -20,7 +20,13 @@ pub struct Padding {
     pub l: u16,
 }
 impl Padding {
-    pub fn add(&mut self, val: u16) {
+    pub fn add_padding(&mut self, padding: Padding) {
+        self.t += padding.t;
+        self.r += padding.r;
+        self.b += padding.b;
+        self.l += padding.l;
+    }
+    pub fn add_value(&mut self, val: u16) {
         self.t += val;
         self.r += val;
         self.b += val;
@@ -61,7 +67,7 @@ pub trait InteractiveTable {
 pub struct TableStyle<'a> {
     pub table: Style,
     pub header: Style,
-    pub block: Option<Block<'a>>,
+    pub block: (Block<'a>, Padding),
     pub highlight: Style,
     pub column_spacing: u16,
 }
@@ -79,7 +85,7 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
     pub fn new(
         data: Vec<T>,
         mut state: TableState,
-        style: TableStyle<'a>,
+        mut style: TableStyle<'a>,
         title: Option<String>,
     ) -> Self {
         let rows = data.iter().map(|model| {
@@ -104,15 +110,10 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
             .map(|(s, c)| c(*s))
             .collect();
 
-        if let Some(idx) = state.selected() {
-            state.select(Some(idx.clamp(0, data.len().saturating_sub(1))));
-        }
-
+        let mut padding = Padding::default();
         let mut table = Table::new(rows, constraints)
             .column_spacing(style.column_spacing)
             .highlight_style(style.highlight);
-
-        let mut padding = Padding::default();
 
         if let Some(header) = T::column_names() {
             padding.t += 1;
@@ -127,12 +128,15 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
             };
             table = table.header(row.style(style.header));
         }
-        if let Some(mut block) = style.block {
-            padding.add(1);
-            if let Some(title) = title {
-                block = block.title(title);
-            }
-            table = table.block(block);
+
+        padding.add_padding(style.block.1);
+        if let Some(title) = title {
+            style.block.0 = style.block.0.title(title);
+        }
+        table = table.block(style.block.0);
+
+        if let Some(idx) = state.selected() {
+            state.select(Some(idx.clamp(0, data.len().saturating_sub(1))));
         }
 
         Self {
@@ -182,14 +186,12 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                     }
                 }
             }
-            Event::Mouse(ev) => {
-                if !self.inner_area().contains(Position {
+            Event::Mouse(ev)
+                if self.inner_area().contains(Position {
                     x: ev.column,
                     y: ev.row,
-                }) {
-                    return;
-                }
-
+                }) =>
+            {
                 match ev.kind {
                     MouseEventKind::ScrollDown => match ev.modifiers {
                         KeyModifiers::ALT => self.select_relative(2),
