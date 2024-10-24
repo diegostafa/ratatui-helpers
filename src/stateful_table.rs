@@ -38,6 +38,9 @@ pub trait Tabular {
     type Value;
     fn value(&self) -> Self::Value;
     fn content(&self) -> Vec<String>;
+    fn style(&self) -> Style {
+        Style::default()
+    }
     fn column_constraints() -> Vec<fn(u16) -> Constraint>;
     fn column_names() -> Option<Vec<String>> {
         None
@@ -45,11 +48,11 @@ pub trait Tabular {
     fn column_alignments() -> Option<Vec<Alignment>> {
         None
     }
-    fn style(&self) -> Style {
-        Style::default()
+    fn row_height() -> u16 {
+        1
     }
-    fn show_headers() -> bool {
-        true
+    fn header_height() -> u16 {
+        1
     }
 }
 pub trait InteractiveTable {
@@ -88,19 +91,26 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         mut style: TableStyle<'a>,
         title: Option<String>,
     ) -> Self {
+        let alignments = T::column_alignments();
+        let names = T::column_names();
+
         let rows = data.iter().map(|model| {
-            let mut row = match T::column_alignments() {
+            if cfg!(debug_assertions) {
+                Self::check_tabular(model);
+            }
+
+            match &alignments {
                 Some(alignments) => Row::new(
                     model
                         .content()
                         .into_iter()
                         .zip(alignments)
-                        .map(|(c, a)| Text::raw(c).alignment(a)),
+                        .map(|(c, a)| Text::raw(c).alignment(*a)),
                 ),
                 None => Row::new(model.content()),
-            };
-            row = row.style(model.style());
-            row
+            }
+            .style(model.style())
+            .height(T::row_height())
         });
 
         let col_widths = Self::columns_max_widths(&data);
@@ -113,16 +123,16 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         let mut padding = Padding::default();
         let mut table = Table::new(rows, constraints)
             .column_spacing(style.column_spacing)
-            .highlight_style(style.highlight);
+            .row_highlight_style(style.highlight);
 
-        if let Some(header) = T::column_names() {
+        if let Some(header) = names {
             padding.t += 1;
-            let row = match T::column_alignments() {
+            let row = match &alignments {
                 Some(alignments) => Row::new(
                     header
                         .into_iter()
                         .zip(alignments)
-                        .map(|(c, a)| Text::raw(c).alignment(a)),
+                        .map(|(c, a)| Text::raw(c).alignment(*a)),
                 ),
                 None => Row::new(header),
             };
@@ -246,6 +256,13 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         let max_widths = |a: Vec<u16>, b: Vec<u16>| (0..a.len()).map(|i| a[i].max(b[i])).collect();
         data.into_iter().map(widths).reduce(max_widths).unwrap()
     }
+    fn check_tabular(t: &T) {
+        let content = t.content().len();
+        let constraints = T::column_constraints().len();
+        let names = T::column_names().map_or(content, |n| n.len());
+        let alignements = T::column_alignments().map_or(content, |a| a.len());
+        assert!(content == constraints && constraints == names && names == alignements);
+    }
 }
 impl<T: Tabular> InteractiveTable for StatefulTable<'_, T> {
     fn select_next(&mut self) {
@@ -282,6 +299,7 @@ impl<T: Tabular> InteractiveTable for StatefulTable<'_, T> {
     }
     fn screen_coords_to_row_index(&self, (row, col): (u16, u16)) -> Option<usize> {
         let area = self.inner_area();
+        let row = row.div_ceil(T::row_height());
         if row >= area.y
             && col >= area.x
             && row < area.y.saturating_add(area.height)

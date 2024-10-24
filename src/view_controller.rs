@@ -58,13 +58,6 @@ where
     pub fn is_running(&self) -> bool {
         self.views.len() > 1
     }
-    pub fn update(&mut self, ev: &Event) -> S {
-        if let Some(dock) = &mut self.dock {
-            dock.view.update(ev)
-        } else {
-            self.curr_mut().update(ev)
-        }
-    }
 
     // --- views
     pub fn push(&mut self, view: Box<dyn View<Model = M, Signal = S, Kind = K>>) {
@@ -122,7 +115,6 @@ where
     pub fn show_status_always(&self, msg: String) -> StatusId {
         self.status.lock().unwrap().show(msg, None)
     }
-
     pub fn update_status_line(&self) {
         self.status.lock().unwrap().update();
     }
@@ -134,14 +126,9 @@ where
     pub fn remove_dock(&mut self) {
         self.dock = None;
     }
-    pub fn hide_dock(&mut self) {
-        if let Some(dock) = &mut self.dock {
-            dock.is_hidden = true;
-        }
-    }
-    pub fn show_dock(&mut self) {
-        if let Some(dock) = &mut self.dock {
-            dock.is_hidden = false;
-        }
+    pub fn update_dock(&mut self, ev: &Event) -> S {
+        self.dock
+            .as_mut()
+            .map_or(S::default(), |dock| dock.view.update(ev))
     }
 }
