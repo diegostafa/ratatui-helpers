@@ -13,7 +13,7 @@ pub fn parse_toml<Partial: DeserializeOwned, Full: From<Partial>>(proj: &str, pa
     match toml {
         Ok(toml) => Full::from(toml),
         Err(e) => {
-            println!("Failed to parse the file with error: {}", e);
+            eprintln!("Failed to parse the file with error: {}", e);
             panic!();
         }
     }

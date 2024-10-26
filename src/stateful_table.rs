@@ -1,5 +1,7 @@
 use std::fmt::Display;
+use std::ops::Div;
 
+use itertools::Itertools;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
@@ -72,6 +74,7 @@ pub struct TableStyle<'a> {
     pub header: Style,
     pub block: (Block<'a>, Padding),
     pub highlight: Style,
+    pub normal: Style,
     pub column_spacing: u16,
 }
 
@@ -114,14 +117,15 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         });
 
         let col_widths = Self::columns_max_widths(&data);
-        let constraints: Vec<_> = col_widths
+        let constraints = col_widths
             .iter()
             .zip(T::column_constraints().iter())
             .map(|(s, c)| c(*s))
-            .collect();
+            .collect_vec();
 
         let mut padding = Padding::default();
         let mut table = Table::new(rows, constraints)
+            .style(style.normal)
             .column_spacing(style.column_spacing)
             .row_highlight_style(style.highlight);
 
@@ -229,11 +233,10 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
     pub fn state(&self) -> &TableState {
         &self.state
     }
-    pub fn size(&self) -> (u16, u16) {
-        (
-            self.inner_width + self.padding.l + self.padding.r,
-            self.rows_count() as u16 + self.padding.t + self.padding.b,
-        )
+    pub fn min_area(&self) -> (u16, u16) {
+        let w = self.inner_width + self.padding.l + self.padding.r;
+        let h = (self.rows_count() as u16 * T::row_height()) + self.padding.t + self.padding.b;
+        (w, h)
     }
     pub fn inner_area(&self) -> Rect {
         Rect {
@@ -244,15 +247,14 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         }
     }
     fn columns_max_widths(data: &[T]) -> Vec<u16> {
-        let mut data: Vec<_> = data.iter().map(T::content).collect();
-
+        let mut data = data.iter().map(T::content).collect_vec();
         if let Some(headers) = T::column_names() {
             data.push(headers);
         }
         if data.is_empty() {
             return vec![];
         }
-        let widths = |a: Vec<String>| a.iter().map(|e| e.len() as u16).collect::<Vec<_>>();
+        let widths = |a: Vec<String>| a.iter().map(|e| e.len() as u16).collect();
         let max_widths = |a: Vec<u16>, b: Vec<u16>| (0..a.len()).map(|i| a[i].max(b[i])).collect();
         data.into_iter().map(widths).reduce(max_widths).unwrap()
     }
@@ -299,13 +301,12 @@ impl<T: Tabular> InteractiveTable for StatefulTable<'_, T> {
     }
     fn screen_coords_to_row_index(&self, (row, col): (u16, u16)) -> Option<usize> {
         let area = self.inner_area();
-        let row = row.div_ceil(T::row_height());
         if row >= area.y
             && col >= area.x
             && row < area.y.saturating_add(area.height)
             && col < area.x.saturating_add(area.width)
         {
-            let relative = row.saturating_sub(area.y);
+            let relative = row.saturating_sub(area.y).div(T::row_height());
             let absolute = relative.saturating_add(self.state.offset() as u16);
             return Some(absolute as usize);
         }
@@ -361,6 +362,9 @@ impl<T: Tabular> Tabular for IndexedRow<T> {
             alignemnts.insert(0, Alignment::Center);
             alignemnts
         })
+    }
+    fn row_height() -> u16 {
+        T::row_height()
     }
 }
 
