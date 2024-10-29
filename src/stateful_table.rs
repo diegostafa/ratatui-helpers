@@ -6,7 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
 };
-use ratatui::layout::{Alignment, Constraint, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Row, StatefulWidget, Table, TableState};
@@ -65,8 +65,12 @@ pub trait InteractiveTable {
     fn select_absolute(&mut self, idx: usize);
     fn select_visible(&mut self, idx: usize);
     fn select_relative(&mut self, offset: isize);
-    fn selected_index(&self) -> Option<usize>;
+
+    fn selected_row(&self) -> Option<usize>;
+    fn selected_col(&self) -> Option<usize>;
+
     fn screen_coords_to_row_index(&self, pos: (u16, u16)) -> Option<usize>;
+    fn screen_coords_to_col_index(&self, pos: (u16, u16)) -> Option<usize>;
 }
 
 pub struct TableStyle<'a> {
@@ -74,6 +78,7 @@ pub struct TableStyle<'a> {
     pub header: Style,
     pub block: (Block<'a>, Padding),
     pub highlight: Style,
+    pub col_highlight: Style,
     pub normal: Style,
     pub column_spacing: u16,
 }
@@ -86,6 +91,7 @@ pub struct StatefulTable<'a, T: Tabular> {
     padding: Padding,
     inner_width: u16,
     keymap: TableKeyMap,
+    col_constraints: Vec<Constraint>,
 }
 impl<'a, T: Tabular> StatefulTable<'a, T> {
     pub fn new(
@@ -123,11 +129,21 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
             .map(|(s, c)| c(*s))
             .collect_vec();
 
+        let col_constraints = constraints
+            .clone()
+            .into_iter()
+            .interleave(vec![
+                Constraint::Length(style.column_spacing);
+                constraints.len() - 1
+            ])
+            .collect_vec();
+
         let mut padding = Padding::default();
         let mut table = Table::new(rows, constraints)
             .style(style.normal)
             .column_spacing(style.column_spacing)
-            .row_highlight_style(style.highlight);
+            .row_highlight_style(style.highlight)
+            .column_highlight_style(style.col_highlight);
 
         if let Some(header) = names {
             padding.t += 1;
@@ -162,10 +178,17 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
             values: data.iter().map(T::value).collect(),
             area: Rect::default(),
             keymap: KeyMap::default(),
+            col_constraints,
         }
     }
     pub fn selected_value(&self) -> Option<&T::Value> {
         self.state.selected().and_then(|i| self.values.get(i))
+    }
+    pub fn selected_row(&self) -> Option<usize> {
+        self.state.selected()
+    }
+    pub fn selected_col(&self) -> Option<usize> {
+        self.state.selected_column()
     }
     pub fn rows_count(&self) -> usize {
         self.values.len()
@@ -178,7 +201,7 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                         TableCommand::GoDown => self.select_next(),
                         TableCommand::GoUp => self.select_prev(),
                         TableCommand::GoDownCycle => {
-                            if let Some(idx) = self.selected_index() {
+                            if let Some(idx) = self.selected_row() {
                                 if idx == self.rows_count() - 1 {
                                     self.select_absolute(0);
                                 } else {
@@ -187,7 +210,7 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                             }
                         }
                         TableCommand::GoUpCycle => {
-                            if let Some(idx) = self.selected_index() {
+                            if let Some(idx) = self.selected_row() {
                                 if idx == 0 {
                                     self.select_absolute(self.rows_count() - 1);
                                 } else {
@@ -200,12 +223,14 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                     }
                 }
             }
-            Event::Mouse(ev)
-                if self.inner_area().contains(Position {
+            Event::Mouse(ev) => {
+                let pos = Position {
                     x: ev.column,
                     y: ev.row,
-                }) =>
-            {
+                };
+                if !self.area.contains(pos) {
+                    return;
+                }
                 match ev.kind {
                     MouseEventKind::ScrollDown => match ev.modifiers {
                         KeyModifiers::ALT => self.select_relative(2),
@@ -216,8 +241,10 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                         _ => self.select_prev(),
                     },
                     MouseEventKind::Down(MouseButton::Left | MouseButton::Right) => {
-                        if let Some(row) = self.screen_coords_to_row_index((ev.row, ev.column)) {
+                        if let Some(row) = self.screen_coords_to_row_index(pos) {
                             self.select_absolute(row);
+                        } else if let Some(col) = self.screen_coords_to_col_index(pos) {
+                            self.select_absolute_col(col);
                         }
                     }
                     _ => {}
@@ -238,13 +265,50 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         let h = (self.rows_count() as u16 * T::row_height()) + self.padding.t + self.padding.b;
         (w, h)
     }
-    pub fn inner_area(&self) -> Rect {
+    pub fn header_area(&self) -> Option<Rect> {
+        if T::column_names().is_none() {
+            return None;
+        }
+        let area = self.rows_area();
+        Some(Rect {
+            x: area.x,
+            y: area.y - 1,
+            width: area.width,
+            height: 1,
+        })
+    }
+    pub fn rows_area(&self) -> Rect {
         Rect {
             x: self.area.x + self.padding.l,
             y: self.area.y + self.padding.t,
             width: self.area.width - self.padding.l - self.padding.r,
             height: self.area.height - self.padding.t - self.padding.b,
         }
+    }
+    pub fn screen_coords_to_row_index(&self, pos: Position) -> Option<usize> {
+        let area = self.rows_area();
+        if pos.y >= area.y
+            && pos.x >= area.x
+            && pos.y < area.y.saturating_add(area.height)
+            && pos.x < area.x.saturating_add(area.width)
+        {
+            let relative = pos.y.saturating_sub(area.y).div(T::row_height());
+            let absolute = relative.saturating_add(self.state.offset() as u16);
+            return Some(absolute as usize);
+        }
+        None
+    }
+    pub fn screen_coords_to_col_index(&self, pos: Position) -> Option<usize> {
+        self.header_area().and_then(|area| {
+            Layout::default()
+                .direction(ratatui::layout::Direction::Horizontal)
+                .constraints(self.col_constraints.clone())
+                .split(area)
+                .into_iter()
+                .enumerate()
+                .find(|(i, rect)| i % 2 == 0 && rect.contains(pos))
+                .map(|(i, _)| i / 2)
+        })
     }
     fn columns_max_widths(data: &[T]) -> Vec<u16> {
         let mut data = data.iter().map(T::content).collect_vec();
@@ -266,28 +330,29 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         assert!(content == constraints && constraints == names && names == alignements);
     }
 }
-impl<T: Tabular> InteractiveTable for StatefulTable<'_, T> {
-    fn select_next(&mut self) {
+
+impl<'a, T: Tabular> StatefulTable<'a, T> {
+    pub fn select_next(&mut self) {
         self.select_relative(1);
     }
-    fn select_prev(&mut self) {
+    pub fn select_prev(&mut self) {
         self.select_relative(-1);
     }
-    fn select_next_page(&mut self) {
-        self.select_relative(self.inner_area().height as isize)
+    pub fn select_next_page(&mut self) {
+        self.select_relative(self.rows_area().height as isize)
     }
-    fn select_prev_page(&mut self) {
-        self.select_relative(-(self.inner_area().height as isize))
+    pub fn select_prev_page(&mut self) {
+        self.select_relative(-(self.rows_area().height as isize))
     }
-    fn select_absolute(&mut self, idx: usize) {
+    pub fn select_absolute(&mut self, idx: usize) {
         let idx = idx.clamp(0, self.rows_count().saturating_sub(1));
         self.state.select(Some(idx));
     }
-    fn select_visible(&mut self, idx: usize) {
+    pub fn select_visible(&mut self, idx: usize) {
         self.select_absolute(self.state.offset().saturating_add(idx));
     }
-    fn select_relative(&mut self, offset: isize) {
-        let new = self.selected_index().map_or(0, |curr| {
+    pub fn select_relative(&mut self, offset: isize) {
+        let new = self.selected_row().map_or(0, |curr| {
             if offset < 0 {
                 curr.saturating_sub(offset.unsigned_abs())
             } else {
@@ -296,21 +361,25 @@ impl<T: Tabular> InteractiveTable for StatefulTable<'_, T> {
         });
         self.select_absolute(new);
     }
-    fn selected_index(&self) -> Option<usize> {
-        self.state.selected()
+    pub fn select_next_col(&mut self) {
+        self.select_relative_col(1);
     }
-    fn screen_coords_to_row_index(&self, (row, col): (u16, u16)) -> Option<usize> {
-        let area = self.inner_area();
-        if row >= area.y
-            && col >= area.x
-            && row < area.y.saturating_add(area.height)
-            && col < area.x.saturating_add(area.width)
-        {
-            let relative = row.saturating_sub(area.y).div(T::row_height());
-            let absolute = relative.saturating_add(self.state.offset() as u16);
-            return Some(absolute as usize);
-        }
-        None
+    pub fn select_prev_col(&mut self) {
+        self.select_relative_col(-1);
+    }
+    pub fn select_relative_col(&mut self, offset: isize) {
+        let new = self.selected_col().map_or(0, |curr| {
+            if offset < 0 {
+                curr.saturating_sub(offset.unsigned_abs())
+            } else {
+                curr.saturating_add(offset.unsigned_abs())
+            }
+        });
+        self.select_absolute_col(new);
+    }
+    pub fn select_absolute_col(&mut self, idx: usize) {
+        let idx = idx.clamp(0, self.col_constraints.len().saturating_sub(1));
+        self.state.select_column(Some(idx));
     }
 }
 impl<'a, T: Tabular> StatefulWidget for StatefulTable<'a, T> {
