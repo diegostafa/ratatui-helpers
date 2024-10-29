@@ -107,13 +107,17 @@ where
         &self.status
     }
     pub fn show_status(&self, msg: String) {
-        let _ = self.status.lock().unwrap().show(msg, Some(self.status_ttl));
+        let _ = self
+            .status
+            .lock()
+            .unwrap()
+            .show(msg, Some(self.status_ttl), false);
     }
     pub fn show_status_for(&self, msg: String, duration: Duration) {
-        let _ = self.status.lock().unwrap().show(msg, Some(duration));
+        let _ = self.status.lock().unwrap().show(msg, Some(duration), false);
     }
     pub fn show_status_always(&self, msg: String) -> StatusId {
-        self.status.lock().unwrap().show(msg, None)
+        self.status.lock().unwrap().show(msg, None, true)
     }
     pub fn update_status_line(&self) {
         self.status.lock().unwrap().update();

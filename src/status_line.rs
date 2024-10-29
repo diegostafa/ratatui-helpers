@@ -19,10 +19,20 @@ struct Message {
     msg: String,
     created_at: Instant,
     duration: Option<Duration>,
+    show_elapsed: bool,
+}
+impl Message {
+    pub fn get_elapsed_secs(&self) -> f32 {
+        self.created_at.elapsed().as_millis() as f32 / 1000f32
+    }
 }
 impl Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.msg)
+        if self.show_elapsed {
+            write!(f, "{} ({}s)", self.msg, self.get_elapsed_secs())
+        } else {
+            write!(f, "{}", self.msg)
+        }
     }
 }
 
@@ -32,13 +42,19 @@ pub struct StatusLine {
     lines: Vec<Message>,
 }
 impl StatusLine {
-    pub fn show(&mut self, msg: String, duration: Option<Duration>) -> StatusId {
+    pub fn show(
+        &mut self,
+        msg: String,
+        duration: Option<Duration>,
+        show_elapsed: bool,
+    ) -> StatusId {
         self.ids.next();
         self.lines.push(Message {
             id: self.ids,
             msg,
             created_at: Instant::now(),
             duration,
+            show_elapsed,
         });
         self.ids
     }
