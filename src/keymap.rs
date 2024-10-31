@@ -22,8 +22,11 @@ pub trait KeyMap {
 pub struct ShortCut<T: Display>(pub T, pub Vec<KeyEvent>);
 impl<T: Display> Tabular for ShortCut<T> {
     type Value = ();
+    type ColumnValue = ();
     fn value(&self) -> Self::Value {}
-
+    fn column_values() -> Vec<Self::ColumnValue> {
+        vec![]
+    }
     fn content(&self) -> Vec<String> {
         let keyevent_to_string = |ev: &KeyEvent| {
             let mut mods = ev.modifiers.iter().map(|m| m.to_string()).collect_vec();

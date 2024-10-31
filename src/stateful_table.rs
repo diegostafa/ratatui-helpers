@@ -38,7 +38,10 @@ impl Padding {
 
 pub trait Tabular {
     type Value;
+    type ColumnValue: Clone;
+
     fn value(&self) -> Self::Value;
+    fn column_values() -> Vec<Self::ColumnValue>;
     fn content(&self) -> Vec<String>;
     fn style(&self) -> Style {
         Style::default()
@@ -404,8 +407,16 @@ impl<T: Tabular> IndexedRow<T> {
 }
 impl<T: Tabular> Tabular for IndexedRow<T> {
     type Value = T::Value;
+    type ColumnValue = T::ColumnValue;
     fn value(&self) -> Self::Value {
         self.data.value()
+    }
+    fn column_values() -> Vec<Self::ColumnValue> {
+        let mut values = T::column_values();
+        if let Some(v) = values.first().cloned() {
+            values.insert(0, v);
+        }
+        values
     }
     fn content(&self) -> Vec<String> {
         let mut content = self.data.content();
