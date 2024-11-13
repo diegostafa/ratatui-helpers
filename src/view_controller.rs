@@ -25,9 +25,9 @@ where
     S: Default,
     K: PartialEq,
 {
-    pub fn new(view: Box<dyn View<Model = M, Signal = S, Kind = K>>, status_ttl: Duration) -> Self {
+    pub fn new(status_ttl: Duration) -> Self {
         Self {
-            views: vec![view],
+            views: vec![],
             status: Default::default(),
             status_ttl,
             dock: Default::default(),
@@ -56,12 +56,12 @@ where
         }
     }
     pub fn is_running(&self) -> bool {
-        self.views.len() > 1
+        !self.views.is_empty()
     }
 
     // --- views
     pub fn push(&mut self, view: Box<dyn View<Model = M, Signal = S, Kind = K>>) {
-        if self.curr_mut().kind() == view.kind() {
+        if self.is_running() && self.curr_mut().kind() == view.kind() {
             self.pop();
             self.views.push(view);
         } else {
@@ -71,7 +71,9 @@ where
     }
     pub fn pop(&mut self) {
         self.views.pop();
-        self.curr().set_title();
+        if self.is_running() {
+            self.curr().set_title();
+        }
     }
     pub fn curr(&self) -> &dyn View<Model = M, Signal = S, Kind = K> {
         self.views.last().unwrap().as_ref()

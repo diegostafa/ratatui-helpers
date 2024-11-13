@@ -76,6 +76,7 @@ pub trait InteractiveTable {
     fn screen_coords_to_col_index(&self, pos: (u16, u16)) -> Option<usize>;
 }
 
+#[derive(Default)]
 pub struct TableStyle<'a> {
     pub table: Style,
     pub header: Style,
@@ -223,6 +224,13 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                         }
                         TableCommand::GoPageDown => self.select_next_page(),
                         TableCommand::GoPageUp => self.select_prev_page(),
+                        TableCommand::GoHalfPageDown => {
+                            let offset = self.rows_area().height as isize / 2;
+                            self.select_relative(offset);
+                        } // TableCommand::GoHalfPageUp => {
+                          //     let offset = self.rows_area().height as isize / 2;
+                          //     self.select_relative(-offset);
+                          // }
                     }
                 }
             }
@@ -455,6 +463,8 @@ pub enum TableCommand {
     GoUpCycle,
     GoPageDown,
     GoPageUp,
+    GoHalfPageDown,
+    // GoHalfPageUp,
 }
 impl Display for TableCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -465,6 +475,8 @@ impl Display for TableCommand {
             TableCommand::GoUpCycle => write!(f, "go up cycle"),
             TableCommand::GoPageDown => write!(f, "go page down"),
             TableCommand::GoPageUp => write!(f, "go page up"),
+            TableCommand::GoHalfPageDown => write!(f, "go half page down"),
+            // TableCommand::GoHalfPageUp => write!(f, "go half page up"),
         }
     }
 }
@@ -508,6 +520,15 @@ impl KeyMap for TableKeyMap {
                 TableCommand::GoPageUp,
                 vec![KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE)],
             ),
+            ShortCut(
+                TableCommand::GoHalfPageDown,
+                vec![KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)],
+            ),
+            // FIXME: crossterm is not detecting the shift ???
+            // ShortCut(
+            //     TableCommand::GoHalfPageUp,
+            //     vec![KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT)],
+            // ),
         ])
     }
 }
