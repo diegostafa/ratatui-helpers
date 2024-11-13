@@ -34,6 +34,10 @@ where
         }
     }
     pub fn draw(&mut self, f: &mut Frame<'_>, area: Rect) {
+        if !self.is_running() {
+            return;
+        }
+
         let status = self.status.lock().unwrap();
         let layout = status.get_layout().split(area);
         status.draw(f, layout[1]);
@@ -82,6 +86,9 @@ where
         self.views.last_mut().unwrap()
     }
     pub fn refresh(&mut self, model: &M) {
+        if !self.is_running() {
+            return;
+        }
         self.refresh_visible_views(model, self.views.len() - 1);
     }
     fn refresh_visible_views(&mut self, model: &M, idx: usize) {
