@@ -1,3 +1,6 @@
+#![feature(let_chains)]
+
+use std::cmp::Ordering;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
@@ -11,23 +14,6 @@ use ratatui::Terminal;
 use ratatui_helpers::stateful_table::{IndexedRow, Padding, StatefulTable, TableStyle, Tabular};
 use ratatui_helpers::view::View;
 use ratatui_helpers::view_controller::ViewController;
-
-fn init_term() -> Terminal<CrosstermBackend<std::io::Stdout>> {
-    let mut stdout = std::io::stdout();
-    terminal::enable_raw_mode().unwrap();
-    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
-    Terminal::new(CrosstermBackend::new(stdout)).unwrap()
-}
-fn release_term(mut term: Terminal<CrosstermBackend<std::io::Stdout>>) {
-    terminal::disable_raw_mode().unwrap();
-    crossterm::execute!(
-        term.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )
-    .unwrap();
-    term.show_cursor().unwrap();
-}
 
 #[derive(Default)]
 enum Commands {
@@ -44,15 +30,15 @@ enum ViewKind {
     Normal,
 }
 
+#[derive(Clone)]
 struct Data(&'static str);
 impl Tabular for Data {
     type Value = &'static str;
-    type ColumnValue = ();
+    fn cmp_by_col(&self, other: &Self, _col: usize) -> Ordering {
+        self.0.cmp(other.0)
+    }
     fn value(&self) -> Self::Value {
         self.0
-    }
-    fn column_values() -> Vec<Self::ColumnValue> {
-        vec![()]
     }
     fn content(&self) -> Vec<String> {
         vec![self.0.to_string()]
@@ -61,10 +47,10 @@ impl Tabular for Data {
         vec![Constraint::Fill]
     }
     fn column_names() -> Option<Vec<String>> {
-        Some(vec!["val".to_string()])
+        Some(vec!["Column Name".into()])
     }
     fn column_alignments() -> Option<Vec<Alignment>> {
-        Some(vec![Alignment::Center])
+        Some(vec![Alignment::Left])
     }
 }
 
@@ -74,20 +60,26 @@ struct MainView<'a> {
 impl MainView<'_> {
     fn new() -> Self {
         Self {
-            table: StatefulTable::new(
-                IndexedRow::from((0..100).map(|_| Data("ROW")).collect()),
-                TableState::default(),
-                TableStyle {
-                    table: Style::new(),
-                    header: Style::new(),
-                    block: (Block::new(), Padding::default()),
-                    highlight: Style::new().fg(Color::Red).bg(Color::DarkGray),
-                    col_highlight: Style::new(),
-                    normal: Style::new(),
-                    column_spacing: 5,
-                },
+            table: StatefulTable::new_indexed(
+                Self::gen_data(),
+                TableState::new(),
+                Self::style(),
                 None,
             ),
+        }
+    }
+    fn gen_data() -> Vec<Data> {
+        (0..100).map(|i| Data(format!("ROW {i}").leak())).collect()
+    }
+    fn style() -> TableStyle<'static> {
+        TableStyle {
+            table: Style::new(),
+            header: Style::new(),
+            block: (Block::new(), Padding::default()),
+            highlight: Style::new().fg(Color::Red).bg(Color::DarkGray),
+            col_highlight: Style::new(),
+            normal: Style::new(),
+            column_spacing: 5,
         }
     }
 }
@@ -105,12 +97,11 @@ impl View for MainView<'_> {
     fn update(&mut self, ev: &event::Event) -> Self::Signal {
         self.table.update(ev);
         if let Event::Key(ev) = ev {
-            match ev.code {
-                KeyCode::Char('q') => return Commands::QuitView,
-                _ => {}
+            if let KeyCode::Char('q') = ev.code {
+                return Commands::QuitView;
             }
         }
-        Commands::ShowNotification(format!("{:?}", ev))
+        Commands::None
     }
 }
 
@@ -140,7 +131,7 @@ impl View for NormalView {
 }
 
 fn main() {
-    let mut term = init_term();
+    let mut term = grab_term();
     let mut ctrl = ViewController::new(Duration::from_millis(1000));
     ctrl.push(Box::new(NormalView));
 
@@ -157,5 +148,22 @@ fn main() {
         }
         ctrl.update_status_line();
     }
-    release_term(term);
+    drop_term(term);
+}
+
+fn grab_term() -> Terminal<CrosstermBackend<std::io::Stdout>> {
+    let mut stdout = std::io::stdout();
+    terminal::enable_raw_mode().unwrap();
+    crossterm::execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
+    Terminal::new(CrosstermBackend::new(stdout)).unwrap()
+}
+fn drop_term(mut term: Terminal<CrosstermBackend<std::io::Stdout>>) {
+    terminal::disable_raw_mode().unwrap();
+    crossterm::execute!(
+        term.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .unwrap();
+    term.show_cursor().unwrap();
 }

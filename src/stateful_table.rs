@@ -1,5 +1,7 @@
+use std::cmp::Ordering;
 use std::fmt::Display;
 use std::ops::Div;
+use std::vec;
 
 use itertools::Itertools;
 use ratatui::buffer::Buffer;
@@ -14,7 +16,7 @@ use ratatui::Frame;
 
 use crate::keymap::{KeyMap, ShortCut};
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct Padding {
     pub t: u16,
     pub r: u16,
@@ -36,12 +38,15 @@ impl Padding {
     }
 }
 
-pub trait Tabular {
+pub trait Tabular: Clone {
     type Value;
-    type ColumnValue: Clone;
-
+    fn data(&self) -> impl Tabular {
+        self.clone()
+    }
+    fn cmp_by_col(&self, _other: &Self, _col: usize) -> Ordering {
+        Ordering::Equal
+    }
     fn value(&self) -> Self::Value;
-    fn column_values() -> Vec<Self::ColumnValue>;
     fn content(&self) -> Vec<String>;
     fn style(&self) -> Style {
         Style::default()
@@ -60,21 +65,6 @@ pub trait Tabular {
         1
     }
 }
-pub trait InteractiveTable {
-    fn select_next(&mut self);
-    fn select_prev(&mut self);
-    fn select_next_page(&mut self);
-    fn select_prev_page(&mut self);
-    fn select_absolute(&mut self, idx: usize);
-    fn select_visible(&mut self, idx: usize);
-    fn select_relative(&mut self, offset: isize);
-
-    fn selected_row(&self) -> Option<usize>;
-    fn selected_col(&self) -> Option<usize>;
-
-    fn screen_coords_to_row_index(&self, pos: (u16, u16)) -> Option<usize>;
-    fn screen_coords_to_col_index(&self, pos: (u16, u16)) -> Option<usize>;
-}
 
 #[derive(Default)]
 pub struct TableStyle<'a> {
@@ -88,43 +78,69 @@ pub struct TableStyle<'a> {
 }
 
 pub struct StatefulTable<'a, T: Tabular> {
+    data: Vec<T>,
     table: Table<'a>,
     state: TableState,
-    values: Vec<T::Value>,
+    selected_col_ord: Ordering,
     area: Rect,
+    values: Vec<T::Value>,
+    keymap: TableKeyMap,
     padding: Padding,
     inner_width: u16,
-    keymap: TableKeyMap,
     col_constraints: Vec<Constraint>,
+    indexed: bool,
 }
 impl<'a, T: Tabular> StatefulTable<'a, T> {
+    fn sort_rows(&mut self) {
+        if let Some(col) = self.selected_col() {
+            if self.indexed && col == 0 {
+                return;
+            }
+            let alignments = Self::alignemnts();
+            let mut data = self.data.clone();
+            match self.selected_col_ord {
+                Ordering::Less => data.sort_by(|a, b| a.cmp_by_col(b, col)),
+                Ordering::Equal => data.sort_by(|a, b| b.cmp_by_col(a, col)),
+                Ordering::Greater => {}
+            }
+            let rows = if self.indexed {
+                let dedup = data.iter().map(T::data).collect();
+                Self::build_rows(&IndexedRow::from(dedup), &alignments)
+            } else {
+                Self::build_rows(&data, &alignments)
+            };
+            self.table = std::mem::take(&mut self.table).rows(rows);
+        }
+    }
+
     pub fn new(
+        data: Vec<T>,
+        state: TableState,
+        style: TableStyle<'a>,
+        title: Option<String>,
+    ) -> Self {
+        Self::build_table(data, state, style, title, false)
+    }
+    pub fn new_indexed(
+        data: Vec<T>,
+        state: TableState,
+        style: TableStyle<'a>,
+        title: Option<String>,
+    ) -> StatefulTable<'a, IndexedRow<T>> {
+        StatefulTable::build_table(IndexedRow::from(data), state, style, title, true)
+    }
+
+    fn build_table(
         data: Vec<T>,
         mut state: TableState,
         mut style: TableStyle<'a>,
         title: Option<String>,
+        indexed: bool,
     ) -> Self {
-        let alignments = T::column_alignments();
-        let names = T::column_names();
-
-        let rows = data.iter().map(|model| {
-            if cfg!(debug_assertions) {
-                Self::check_tabular(model);
-            }
-
-            match &alignments {
-                Some(alignments) => Row::new(
-                    model
-                        .content()
-                        .into_iter()
-                        .zip(alignments)
-                        .map(|(c, a)| Text::raw(c).alignment(*a)),
-                ),
-                None => Row::new(model.content()),
-            }
-            .style(model.style())
-            .height(T::row_height())
-        });
+        let values = data.iter().map(T::value).collect();
+        if let Some(idx) = state.selected() {
+            state.select(Some(idx.clamp(0, data.len().saturating_sub(1))));
+        }
 
         let col_widths = Self::columns_max_widths(&data);
         let constraints = col_widths
@@ -140,49 +156,49 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                 Constraint::Length(style.column_spacing);
                 constraints.len() - 1
             ])
-            .collect_vec();
+            .collect();
 
-        let mut padding = Padding::default();
-        let mut table = Table::new(rows, constraints)
+        let alignments = Self::alignemnts();
+        let mut table = Table::new(Self::build_rows(&data, &alignments), constraints)
             .style(style.normal)
             .column_spacing(style.column_spacing)
             .row_highlight_style(style.highlight)
             .column_highlight_style(style.col_highlight);
 
-        if let Some(header) = names {
+        let mut padding = Padding::default();
+        if let Some(header) = T::column_names() {
             padding.t += 1;
-            let row = match &alignments {
-                Some(alignments) => Row::new(
+            table = table.header(
+                Row::new(
                     header
                         .into_iter()
                         .zip(alignments)
-                        .map(|(c, a)| Text::raw(c).alignment(*a)),
-                ),
-                None => Row::new(header),
-            };
-            table = table.header(row.style(style.header));
+                        .map(|(c, a)| Text::raw(c).alignment(a)),
+                )
+                .style(style.header),
+            );
         }
 
         padding.add_padding(style.block.1);
-        if let Some(title) = title {
-            style.block.0 = style.block.0.title(title);
+        if let Some(title) = &title {
+            style.block.0 = style.block.0.title(title.clone());
         }
-        table = table.block(style.block.0);
-
-        if let Some(idx) = state.selected() {
-            state.select(Some(idx.clamp(0, data.len().saturating_sub(1))));
-        }
+        table = table.block(style.block.0.clone());
+        let inner_width =
+            col_widths.iter().sum::<u16>() + (style.column_spacing * (col_widths.len() - 1) as u16);
 
         Self {
             table,
             state,
             padding,
-            inner_width: col_widths.iter().sum::<u16>()
-                + (style.column_spacing * (col_widths.len() - 1) as u16),
-            values: data.iter().map(T::value).collect(),
+            inner_width,
+            values,
+            data,
+            col_constraints,
             area: Rect::default(),
             keymap: KeyMap::default(),
-            col_constraints,
+            selected_col_ord: Ordering::Equal,
+            indexed,
         }
     }
     pub fn selected_value(&self) -> Option<&T::Value> {
@@ -256,6 +272,7 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                             self.select_absolute(row);
                         } else if let Some(col) = self.screen_coords_to_col_index(pos) {
                             self.select_absolute_col(col);
+                            self.sort_rows();
                         }
                     }
                     _ => {}
@@ -277,9 +294,7 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         (w, h)
     }
     pub fn header_area(&self) -> Option<Rect> {
-        if T::column_names().is_none() {
-            return None;
-        }
+        T::column_names()?;
         let area = self.rows_area();
         Some(Rect {
             x: area.x,
@@ -315,7 +330,7 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                 .direction(ratatui::layout::Direction::Horizontal)
                 .constraints(self.col_constraints.clone())
                 .split(area)
-                .into_iter()
+                .iter()
                 .enumerate()
                 .find(|(i, rect)| i % 2 == 0 && rect.contains(pos))
                 .map(|(i, _)| i / 2)
@@ -333,16 +348,24 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         let max_widths = |a: Vec<u16>, b: Vec<u16>| (0..a.len()).map(|i| a[i].max(b[i])).collect();
         data.into_iter().map(widths).reduce(max_widths).unwrap()
     }
-    fn check_tabular(t: &T) {
-        let content = t.content().len();
-        let constraints = T::column_constraints().len();
-        let names = T::column_names().map_or(content, |n| n.len());
-        let alignements = T::column_alignments().map_or(content, |a| a.len());
-        assert!(content == constraints && constraints == names && names == alignements);
+    fn build_rows(data: &[impl Tabular], alignments: &[Alignment]) -> Vec<Row<'a>> {
+        data.iter()
+            .map(|row| {
+                Row::new(
+                    row.content()
+                        .into_iter()
+                        .zip(alignments)
+                        .map(|(c, a)| Text::raw(c).alignment(*a)),
+                )
+                .style(row.style())
+                .height(T::row_height())
+            })
+            .collect()
     }
-}
+    fn alignemnts() -> Vec<Alignment> {
+        T::column_alignments().unwrap_or(vec![Alignment::default(); T::column_constraints().len()])
+    }
 
-impl<'a, T: Tabular> StatefulTable<'a, T> {
     pub fn select_next(&mut self) {
         self.select_relative(1);
     }
@@ -390,10 +413,21 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
     }
     pub fn select_absolute_col(&mut self, idx: usize) {
         let idx = idx.clamp(0, self.col_constraints.len().saturating_sub(1));
+        match self.selected_col() {
+            Some(old) if old != idx => self.selected_col_ord = Ordering::Equal,
+            Some(_) => {
+                self.selected_col_ord = match self.selected_col_ord {
+                    Ordering::Less => Ordering::Equal,
+                    Ordering::Equal => Ordering::Greater,
+                    Ordering::Greater => Ordering::Less,
+                }
+            }
+            None => self.selected_col_ord = Ordering::Equal,
+        }
         self.state.select_column(Some(idx));
     }
 }
-impl<'a, T: Tabular> StatefulWidget for StatefulTable<'a, T> {
+impl<T: Tabular> StatefulWidget for StatefulTable<'_, T> {
     type State = TableState;
     fn render(mut self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         self.area = area;
@@ -401,30 +435,34 @@ impl<'a, T: Tabular> StatefulWidget for StatefulTable<'a, T> {
     }
 }
 
+#[derive(Clone)]
 pub struct IndexedRow<T: Tabular> {
-    pub idx: usize,
-    pub data: T,
+    idx: usize,
+    data: T,
 }
 impl<T: Tabular> IndexedRow<T> {
-    pub fn from(data: Vec<T>) -> Vec<IndexedRow<T>> {
+    pub fn sort_by<F>(rows: &mut [IndexedRow<T>], mut cmp: F)
+    where
+        F: FnMut(&T, &T) -> Ordering,
+    {
+        rows.sort_by(|a, b| cmp(&a.data, &b.data));
+    }
+}
+impl<T: Tabular> IndexedRow<T> {
+    fn from(data: Vec<T>) -> Vec<IndexedRow<T>> {
         data.into_iter()
             .enumerate()
-            .map(|(i, d)| IndexedRow { idx: i, data: d })
+            .map(|(idx, data)| IndexedRow { idx, data })
             .collect()
     }
 }
 impl<T: Tabular> Tabular for IndexedRow<T> {
     type Value = T::Value;
-    type ColumnValue = T::ColumnValue;
+    fn data(&self) -> impl Tabular {
+        self.data.clone()
+    }
     fn value(&self) -> Self::Value {
         self.data.value()
-    }
-    fn column_values() -> Vec<Self::ColumnValue> {
-        let mut values = T::column_values();
-        if let Some(v) = values.first().cloned() {
-            values.insert(0, v);
-        }
-        values
     }
     fn content(&self) -> Vec<String> {
         let mut content = self.data.content();
@@ -454,8 +492,19 @@ impl<T: Tabular> Tabular for IndexedRow<T> {
     fn row_height() -> u16 {
         T::row_height()
     }
+    fn cmp_by_col(&self, other: &Self, col: usize) -> Ordering {
+        if col == 0 {
+            Ordering::Equal
+        } else {
+            self.data.cmp_by_col(&other.data, col - 1)
+        }
+    }
+    fn header_height() -> u16 {
+        1
+    }
 }
 
+#[derive(Clone)]
 pub enum TableCommand {
     GoDown,
     GoUp,
@@ -481,6 +530,7 @@ impl Display for TableCommand {
     }
 }
 
+#[derive(Clone)]
 pub struct TableKeyMap(pub Vec<ShortCut<TableCommand>>);
 impl KeyMap for TableKeyMap {
     type Command = TableCommand;
