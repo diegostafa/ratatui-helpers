@@ -433,20 +433,13 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
             if self.indexed && col == 0 {
                 return;
             }
-            let mut data = self
-                .data
-                .clone()
-                .into_iter()
-                .zip(std::mem::take(&mut self.values))
-                .collect_vec();
-
+            let mut data = self.data.clone();
             match self.selected_col_ord {
-                Ordering::Less => data.sort_by(|a, b| a.0.cmp_by_col(&b.0, col)),
-                Ordering::Greater => data.sort_by(|a, b| b.0.cmp_by_col(&a.0, col)),
+                Ordering::Less => data.sort_by(|a, b| a.cmp_by_col(b, col)),
+                Ordering::Greater => data.sort_by(|a, b| b.cmp_by_col(a, col)),
                 Ordering::Equal => {}
             }
 
-            let (data, values): (Vec<_>, Vec<_>) = data.into_iter().unzip();
             let alignments = Self::alignemnts();
             let rows = if self.indexed {
                 // rebuild indexes
@@ -469,7 +462,7 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
                 table = table.header(header);
             }
             self.table = table;
-            self.values = values;
+            self.values = data.iter().map(|d| d.value()).collect();
         }
     }
 }
