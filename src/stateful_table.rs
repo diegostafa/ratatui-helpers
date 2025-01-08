@@ -81,6 +81,7 @@ pub struct StatefulTable<'a, T: Tabular> {
     data: Vec<T>,
     table: Table<'a>,
     state: TableState,
+    style: TableStyle<'a>,
     selected_col_ord: Ordering,
     area: Rect,
     values: Vec<T::Value>,
@@ -91,25 +92,76 @@ pub struct StatefulTable<'a, T: Tabular> {
     indexed: bool,
 }
 impl<'a, T: Tabular> StatefulTable<'a, T> {
+    fn build_header(
+        alignments: &[Alignment],
+        selected_col: Option<usize>,
+        selected_col_ord: Ordering,
+        header_style: Style,
+    ) -> Option<Row<'a>> {
+        T::column_names().map(|header| {
+            Row::new(
+                header
+                    .into_iter()
+                    .zip(alignments)
+                    .enumerate()
+                    .map(|(i, (c, a))| {
+                        Text::raw(match selected_col {
+                            Some(col) if col == i => Self::format_column_name(c, selected_col_ord),
+                            _ => c,
+                        })
+                        .alignment(*a)
+                    }),
+            )
+            .style(header_style)
+        })
+    }
+    fn format_column_name(s: String, ord: Ordering) -> String {
+        match ord {
+            Ordering::Less => format!("{s}▲"),
+            Ordering::Equal => format!("{s}-"),
+            Ordering::Greater => format!("{s}▼"),
+        }
+    }
+
     fn sort_rows(&mut self) {
         if let Some(col) = self.selected_col() {
             if self.indexed && col == 0 {
                 return;
             }
             let alignments = Self::alignemnts();
-            let mut data = self.data.clone();
+            let mut data = self
+                .data
+                .clone()
+                .into_iter()
+                .zip(std::mem::take(&mut self.values))
+                .collect_vec();
+
             match self.selected_col_ord {
-                Ordering::Less => data.sort_by(|a, b| a.cmp_by_col(b, col)),
-                Ordering::Equal => data.sort_by(|a, b| b.cmp_by_col(a, col)),
-                Ordering::Greater => {}
+                Ordering::Less => data.sort_by(|a, b| a.0.cmp_by_col(&b.0, col)),
+                Ordering::Greater => data.sort_by(|a, b| b.0.cmp_by_col(&a.0, col)),
+                Ordering::Equal => {}
             }
+
+            let (data, values): (Vec<_>, Vec<_>) = data.into_iter().unzip();
             let rows = if self.indexed {
+                // rebuild indexes
                 let dedup = data.iter().map(T::data).collect();
                 Self::build_rows(&IndexedRow::from(dedup), &alignments)
             } else {
                 Self::build_rows(&data, &alignments)
             };
-            self.table = std::mem::take(&mut self.table).rows(rows);
+            let mut table = std::mem::take(&mut self.table);
+            table = table.rows(rows);
+            if let Some(header) = Self::build_header(
+                &alignments,
+                self.selected_col(),
+                self.selected_col_ord,
+                self.style.header,
+            ) {
+                table = table.header(header);
+            }
+            self.table = table;
+            self.values = values;
         }
     }
 
@@ -166,17 +218,9 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
             .column_highlight_style(style.col_highlight);
 
         let mut padding = Padding::default();
-        if let Some(header) = T::column_names() {
+        if let Some(header) = Self::build_header(&alignments, None, Ordering::Equal, style.header) {
             padding.t += 1;
-            table = table.header(
-                Row::new(
-                    header
-                        .into_iter()
-                        .zip(alignments)
-                        .map(|(c, a)| Text::raw(c).alignment(a)),
-                )
-                .style(style.header),
-            );
+            table = table.header(header);
         }
 
         padding.add_padding(style.block.1);
@@ -190,6 +234,7 @@ impl<'a, T: Tabular> StatefulTable<'a, T> {
         Self {
             table,
             state,
+            style,
             padding,
             inner_width,
             values,
